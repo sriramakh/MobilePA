@@ -66,6 +66,7 @@ public final class MainActivity extends DeskUi {
   protected void onResume() {
     super.onResume();
     refreshHandler.post(updateMail);
+    if (rules != null) rules.offerOtpPermission();
   }
 
   @Override
