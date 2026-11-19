@@ -1,0 +1,32 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'dev.mobilepa'
+    compileSdk 36
+    buildToolsVersion '36.0.0'
+    packaging { resources { merges += ['META-INF/NOTICE.md', 'META-INF/LICENSE.md'] } }
+    defaultConfig {
+        applicationId 'dev.mobilepa'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName '1.0'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'com.googlecode.libphonenumber:libphonenumber:8.13.55'
+    implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
+    implementation 'com.sun.mail:android-mail:1.6.7'
+    implementation 'com.sun.mail:android-activation:1.6.7'
+    implementation 'com.google.android.gms:play-services-auth:21.3.0'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'com.squareup.okhttp3:okhttp-tls:4.12.0'
+    testImplementation 'junit:junit:4.13.2'
+}
