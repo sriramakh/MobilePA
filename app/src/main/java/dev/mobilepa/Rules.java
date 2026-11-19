@@ -17,6 +17,7 @@ final class Rules {
   final MainActivity a;
   final Store db;
   private long pendingEnable, editing;
+  private String editingKind = Language.PHRASE_KIND;
   private TextView account;
   private LinearLayout history;
   private String historyVersion = "";
@@ -33,16 +34,21 @@ final class Rules {
   }
 
   void page() {
-    a.layout("Rules", "Forwarding", "Email a copy of new carrier SMS that match a rule.");
+    a.layout(
+        "Rules",
+        "Forwarding",
+        "Email new carrier SMS that match a rule, including verification codes.");
     account = a.action("", this::connect, false);
     a.wide(a.page, account);
     a.gap(a.page, 8);
     a.wide(a.page, a.action("＋  New rule", () -> editor(0, "", ""), true));
     a.section("Your rules");
-    List<Store.Row> rows = db.rows("SELECT * FROM rule ORDER BY id DESC");
+    List<Store.Row> rows =
+        db.rows("SELECT * FROM rule ORDER BY CASE kind WHEN 'otp' THEN 0 ELSE 1 END, id DESC");
     if (rows.isEmpty()) a.hint(a.page, "Choose a sender, a phrase, and your email address.");
     for (Store.Row r : rows) {
       boolean enabled = r.n("enabled") == 1 && a.allowed(Manifest.permission.RECEIVE_SMS);
+      String target = r.s("destination").isEmpty() ? "Add your email" : r.s("destination");
       a.card(
           a.page,
           r.s("phrases"),
@@ -50,7 +56,7 @@ final class Rules {
               + " · "
               + (r.s("sender").isEmpty() ? "Any sender" : r.s("sender"))
               + " → "
-              + r.s("destination"),
+              + target,
           "⇄",
           () -> manage(r.id()));
     }
@@ -293,6 +299,44 @@ final class Rules {
     testEmail();
   }
 
+  private void rememberDestination(String to) {
+    if (to == null || to.isEmpty()) return;
+    prefs().edit().putString("destination", to).apply();
+    for (Store.Row r : db.rows("SELECT id, destination FROM rule WHERE kind='otp'")) {
+      if (r.s("destination").isEmpty())
+        db.edit("rule", r.id(), Store.values("destination", to, "enabled", 1));
+    }
+  }
+
+  void offerOtpPermission() {
+    long id = 0;
+    String destination = "";
+    for (Store.Row r : db.rows("SELECT id, destination FROM rule WHERE kind='otp' AND enabled=1")) {
+      if (!r.s("destination").isEmpty()) {
+        id = r.id();
+        destination = r.s("destination");
+      }
+    }
+    if (id == 0) return;
+    if (a.allowed(Manifest.permission.RECEIVE_SMS)) {
+      if (!prefs().getBoolean("otp_ready_noted", false)) {
+        prefs().edit().putBoolean("otp_ready_noted", true).apply();
+        a.toast("Verification codes will be emailed to " + destination);
+      }
+      return;
+    }
+    if (prefs().getBoolean("otp_permission_asked", false)) return;
+    prefs().edit().putBoolean("otp_permission_asked", true).apply();
+    pendingEnable = id;
+    a.getWindow()
+        .getDecorView()
+        .post(
+            () -> {
+              if (!a.isDestroyed() && !a.allowed(Manifest.permission.RECEIVE_SMS))
+                a.requestPermissions(new String[] {Manifest.permission.RECEIVE_SMS}, 32);
+            });
+  }
+
   private boolean validEmail(EditText e) {
     String s = e.getText().toString().trim();
     if (!Patterns.EMAIL_ADDRESS.matcher(s).matches() || s.contains("\r") || s.contains("\n")) {
@@ -334,26 +378,43 @@ final class Rules {
                       "received",
                       System.currentTimeMillis(),
                       "state",
-                      "Queued"));
+                      "Queued",
+                      "kind",
+                      Language.PHRASE_KIND));
+              rememberDestination(to);
               DeliveryJob.enqueue(a);
               d[0].dismiss();
               a.navigate("Rules");
+              offerOtpPermission();
             });
   }
 
   void editor(long id, String from, String words) {
     editing = id;
     Store.Row r = id == 0 ? null : db.byId("rule", id);
+    editingKind = r == null || r.s("kind").isEmpty() ? Language.PHRASE_KIND : r.s("kind");
+    boolean otp = Language.OTP_KIND.equals(editingKind);
     LinearLayout box = a.column();
     a.fieldLabel(box, "Sender ID or number");
     sender = a.field(r == null ? from : r.s("sender"), "Blank matches any sender", false);
     a.wide(box, sender);
-    a.fieldLabel(box, "Words or phrases");
-    phrases =
-        a.field(r == null ? words : r.s("phrases"), "Example: bill generated, payment due", true);
-    a.wide(box, phrases);
-    a.hint(
-        box, "Separate alternatives with commas. Common verification-code messages are skipped.");
+    if (otp) {
+      phrases = null;
+      a.hint(
+          box,
+          "Forwards an SMS when it mentions OTP, one-time password, verification code, passcode,"
+              + " security code, or login code, or when a 4–8 digit code appears beside the word"
+              + " code or PIN. Matching ignores capitalization.");
+    } else {
+      a.fieldLabel(box, "Words or phrases");
+      phrases =
+          a.field(r == null ? words : r.s("phrases"), "Example: bill generated, payment due", true);
+      a.wide(box, phrases);
+      a.hint(
+          box,
+          "Separate alternatives with commas. Verification-code messages are handled by the OTP"
+              + " rule.");
+    }
     a.fieldLabel(box, "Forward to");
     destination =
         a.field(
@@ -370,12 +431,12 @@ final class Rules {
     a.wide(box, a.action("Preview recent inbox matches", this::previewPermission, false));
     editor =
         a.form(
-            id == 0 ? "New forwarding rule" : "Edit forwarding rule",
+            otp ? "OTP forwarding" : id == 0 ? "New forwarding rule" : "Edit forwarding rule",
             box,
             "Save rule",
             () -> {
-              String text = phrases.getText().toString().trim();
-              if (!Language.hasPhrases(text)) {
+              String text = otp ? Language.OTP_RULE_LABEL : phrases.getText().toString().trim();
+              if (!otp && !Language.hasPhrases(text)) {
                 phrases.setError("Enter at least one phrase");
                 return;
               }
@@ -401,9 +462,10 @@ final class Rules {
                 db.edit("rule", id, v);
                 key = id;
               }
-              prefs().edit().putString("destination", to).apply();
+              rememberDestination(to);
               editor.dismiss();
               a.navigate("Rules");
+              offerOtpPermission();
               new AlertDialog.Builder(a)
                   .setTitle("Enable this rule?")
                   .setMessage(
@@ -421,8 +483,9 @@ final class Rules {
   }
 
   private void sample() {
-    String rulePhrases = phrases.getText().toString().trim();
-    if (!Language.hasPhrases(rulePhrases)) {
+    boolean otp = Language.OTP_KIND.equals(editingKind);
+    String rulePhrases = otp ? Language.OTP_RULE_LABEL : phrases.getText().toString().trim();
+    if (!otp && !Language.hasPhrases(rulePhrases)) {
       phrases.requestFocus();
       phrases.setError("Type a word or phrase before testing, for example: bill generated");
       return;
@@ -449,7 +512,8 @@ final class Rules {
                   rulePhrases,
                   from.getText().toString(),
                   message.getText().toString(),
-                  SmsReceiver.region(a));
+                  SmsReceiver.region(a),
+                  editingKind);
           feedback.setText(result.explanation());
         });
   }
@@ -461,7 +525,9 @@ final class Rules {
 
   private void preview() {
     if (editor == null || !editor.isShowing()) return;
-    String from = sender.getText().toString(), words = phrases.getText().toString();
+    String from = sender.getText().toString();
+    String words = phrases == null ? Language.OTP_RULE_LABEL : phrases.getText().toString();
+    String kind = editingKind;
     Attachments.IO.execute(
         () -> {
           List<Store.Row> hits = new ArrayList<>();
@@ -479,12 +545,13 @@ final class Rules {
               while (c.moveToNext() && hits.size() < 30) {
                 String source = c.getString(0), message = c.getString(1);
                 if (source == null || message == null) continue;
-                String hit = Language.match(from, words, source, message, region);
+                String hit = Language.match(from, words, source, message, region, kind);
                 if (!hit.isEmpty()) {
                   Store.Row row = new Store.Row();
                   row.put("sender", source);
                   row.put("body", message);
                   row.put("phrase", hit);
+                  row.put("kind", kind);
                   row.put(
                       "received", Long.toString(c.getLong(3) > 0 ? c.getLong(3) : c.getLong(2)));
                   hits.add(row);
@@ -550,7 +617,8 @@ final class Rules {
                                   row.n("received"),
                                   row.s("phrase"),
                                   to,
-                                  SmsReceiver.region(a))) added++;
+                                  SmsReceiver.region(a),
+                                  row.s("kind"))) added++;
                             }
                           conn.setTransactionSuccessful();
                         } finally {
@@ -578,15 +646,21 @@ final class Rules {
         r.n("last_checked") == 0
             ? "Waiting for a new carrier SMS after enabling this rule."
             : a.when(r.n("last_checked")) + "\n" + r.s("last_result");
+    String otpNote =
+        Language.OTP_KIND.equals(r.s("kind"))
+            ? "\n\nForwards one-time passcodes. Pause stops new messages. Mail already queued is"
+                + " still sent."
+            : "";
     new AlertDialog.Builder(a)
         .setTitle(r.s("phrases"))
         .setMessage(
             "Sender · "
                 + (r.s("sender").isEmpty() ? "Any" : r.s("sender"))
                 + "\nEmail · "
-                + r.s("destination")
+                + (r.s("destination").isEmpty() ? "Add your email" : r.s("destination"))
                 + "\nStatus · "
                 + status
+                + otpNote
                 + (live ? "\n\nLast SMS check\n" + lastCheck : ""))
         .setPositiveButton(
             live ? "Pause" : "Enable",
@@ -602,6 +676,12 @@ final class Rules {
   }
 
   private void enable(long id) {
+    Store.Row existing = db.byId("rule", id);
+    if (existing != null && existing.s("destination").trim().isEmpty()) {
+      a.toast("Add the email address that should receive matches.");
+      editor(id, "", "");
+      return;
+    }
     pendingEnable = id;
     if (a.allowed(Manifest.permission.RECEIVE_SMS)) permission(32);
     else a.requestPermissions(new String[] {Manifest.permission.RECEIVE_SMS}, 32);
@@ -634,7 +714,7 @@ final class Rules {
       b.putBoolean("ruleEditor", true);
       b.putLong("ruleId", editing);
       b.putString("from", sender.getText().toString());
-      b.putString("words", phrases.getText().toString());
+      b.putString("words", phrases == null ? "" : phrases.getText().toString());
       b.putString("to", destination.getText().toString());
     }
   }
@@ -648,7 +728,7 @@ final class Rules {
               () -> {
                 editor(b.getLong("ruleId"), "", "");
                 sender.setText(b.getString("from"));
-                phrases.setText(b.getString("words"));
+                if (phrases != null) phrases.setText(b.getString("words"));
                 destination.setText(b.getString("to"));
               });
   }

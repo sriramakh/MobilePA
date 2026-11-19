@@ -9,7 +9,6 @@ import com.google.android.gms.tasks.Tasks;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
-import java.text.DateFormat;
 import java.util.*;
 import java.util.concurrent.*;
 import org.json.JSONObject;
@@ -105,16 +104,9 @@ public final class DeliveryJob extends JobService {
       Store.Row row = waiting.get(0);
       store.edit("mail", row.id(), Store.values("state", "Sending", "detail", ""));
       int status;
-      String subject =
-          row.n("rule_id") == 0 ? "MobilePA test email" : "SMS from " + row.s("sender");
+      String subject = Language.mailSubject(row.n("rule_id"), row.s("kind"), row.s("sender"));
       String message =
-          row.s("body")
-              + "\n\nFrom: "
-              + row.s("sender")
-              + "\nReceived: "
-              + DateFormat.getDateTimeInstance().format(new Date(row.n("received")))
-              + "\nMatched: "
-              + row.s("phrase");
+          Language.mailBody(row.s("body"), row.s("sender"), row.n("received"), row.s("phrase"));
       try {
         status =
             smtp

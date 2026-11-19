@@ -11,6 +11,7 @@ import java.security.MessageDigest;
 public final class SmsReceiver extends BroadcastReceiver {
   @Override
   public void onReceive(Context context, Intent intent) {
+    // Queue the SMS locally. Do not log the body or any code.
     if (!Telephony.Sms.Intents.SMS_RECEIVED_ACTION.equals(intent.getAction())) return;
     SmsMessage[] parts = Telephony.Sms.Intents.getMessagesFromIntent(intent);
     if (parts == null || parts.length == 0 || parts[0] == null) return;
@@ -30,7 +31,13 @@ public final class SmsReceiver extends BroadcastReceiver {
     try {
       for (Store.Row rule : store.rows("SELECT * FROM rule WHERE enabled=1 ORDER BY id")) {
         Language.MatchResult result =
-            Language.checkMatch(rule.s("sender"), rule.s("phrases"), sender, message, region);
+            Language.checkMatch(
+                rule.s("sender"),
+                rule.s("phrases"),
+                sender,
+                message,
+                region,
+                rule.s("kind"));
         String detail = result.explanation();
         if (!result.phrase().isEmpty()) {
           boolean added =
@@ -42,7 +49,8 @@ public final class SmsReceiver extends BroadcastReceiver {
                   received,
                   result.phrase(),
                   rule.s("destination"),
-                  region);
+                  region,
+                  rule.s("kind"));
           detail =
               result.explanation()
                   + (added
@@ -76,7 +84,9 @@ public final class SmsReceiver extends BroadcastReceiver {
       long received,
       String phrase,
       String destination,
-      String region) {
+      String region,
+      String kind) {
+    if (kind == null || kind.isEmpty()) kind = Language.PHRASE_KIND;
     String key =
         digest(
             Language.normalizeSender(sender, region)
@@ -85,7 +95,9 @@ public final class SmsReceiver extends BroadcastReceiver {
                 + "\n"
                 + body
                 + "\n"
-                + destination.toLowerCase(java.util.Locale.ROOT));
+                + destination.toLowerCase(java.util.Locale.ROOT)
+                + "\n"
+                + kind);
     ContentValues values =
         Store.values(
             "fingerprint",
@@ -103,7 +115,9 @@ public final class SmsReceiver extends BroadcastReceiver {
             "received",
             received,
             "state",
-            "Queued");
+            "Queued",
+            "kind",
+            kind);
     return store
             .getWritableDatabase()
             .insertWithOnConflict("mail", null, values, SQLiteDatabase.CONFLICT_IGNORE)

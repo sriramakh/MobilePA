@@ -7,14 +7,22 @@ import java.util.*;
 
 final class Store extends SQLiteOpenHelper {
   private static Store instance;
+  private static String pendingDestination = "";
 
   static synchronized Store get(Context c) {
-    if (instance == null) instance = new Store(c.getApplicationContext());
+    if (instance == null) {
+      String saved =
+          c.getApplicationContext()
+              .getSharedPreferences("mail", Context.MODE_PRIVATE)
+              .getString("destination", "");
+      pendingDestination = saved == null ? "" : saved;
+      instance = new Store(c.getApplicationContext());
+    }
     return instance;
   }
 
   private Store(Context c) {
-    super(c, "mobilepa.db", null, 2);
+    super(c, "mobilepa.db", null, 3);
   }
 
   @Override
@@ -33,13 +41,15 @@ final class Store extends SQLiteOpenHelper {
     db.execSQL(
         "CREATE TABLE rule(id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT NOT NULL, phrases TEXT"
             + " NOT NULL, destination TEXT NOT NULL, enabled INTEGER DEFAULT 0,"
-            + " last_checked INTEGER NOT NULL DEFAULT 0, last_result TEXT NOT NULL DEFAULT '')");
+            + " last_checked INTEGER NOT NULL DEFAULT 0, last_result TEXT NOT NULL DEFAULT '',"
+            + " kind TEXT NOT NULL DEFAULT 'phrase')");
     db.execSQL(
         "CREATE TABLE mail(id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint TEXT UNIQUE NOT NULL,"
             + " rule_id INTEGER, sender TEXT NOT NULL, body TEXT NOT NULL, phrase TEXT NOT NULL,"
             + " destination TEXT NOT NULL, received INTEGER NOT NULL, state TEXT NOT NULL, detail"
-            + " TEXT NOT NULL DEFAULT '')");
+            + " TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'phrase')");
     db.execSQL("CREATE INDEX mail_state ON mail(state,id)");
+    seedOtpRule(db);
   }
 
   @Override
@@ -49,12 +59,44 @@ final class Store extends SQLiteOpenHelper {
 
   @Override
   public void onUpgrade(SQLiteDatabase db, int from, int to) {
-    if (from == 1 && to == 2) {
+    if (from < 2) {
       db.execSQL("ALTER TABLE rule ADD COLUMN last_checked INTEGER NOT NULL DEFAULT 0");
       db.execSQL("ALTER TABLE rule ADD COLUMN last_result TEXT NOT NULL DEFAULT ''");
-    } else {
-      throw new IllegalStateException("Unknown database version");
     }
+    if (from < 3) {
+      db.execSQL("ALTER TABLE rule ADD COLUMN kind TEXT NOT NULL DEFAULT 'phrase'");
+      db.execSQL("ALTER TABLE mail ADD COLUMN kind TEXT NOT NULL DEFAULT 'phrase'");
+      seedOtpRule(db);
+    }
+  }
+
+  private void seedOtpRule(SQLiteDatabase db) {
+    try (Cursor existing =
+        db.rawQuery("SELECT id FROM rule WHERE kind=? LIMIT 1", new String[] {Language.OTP_KIND})) {
+      if (existing.moveToFirst()) return;
+    }
+    String destination = defaultDestination(db);
+    ContentValues values = new ContentValues();
+    values.put("sender", "");
+    values.put("phrases", Language.OTP_RULE_LABEL);
+    values.put("destination", destination);
+    values.put("enabled", destination.isEmpty() ? 0 : 1);
+    values.put("last_checked", 0);
+    values.put("last_result", "");
+    values.put("kind", Language.OTP_KIND);
+    db.insert("rule", null, values);
+  }
+
+  private String defaultDestination(SQLiteDatabase db) {
+    if (!pendingDestination.isEmpty()) return pendingDestination;
+    try (Cursor cursor =
+        db.rawQuery(
+            "SELECT destination FROM mail WHERE rule_id=0 AND destination!='' ORDER BY id DESC"
+                + " LIMIT 1",
+            null)) {
+      if (cursor.moveToFirst() && cursor.getString(0) != null) return cursor.getString(0);
+    }
+    return "";
   }
 
   static final class Row extends HashMap<String, String> {
